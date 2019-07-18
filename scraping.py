@@ -9,6 +9,8 @@ import subprocess
 
 import re
 
+host = "https://elaws.e-gov.go.jp"
+
 tt_ksuji = str.maketrans('一二三四五六七八九〇壱弐参', '1234567890123')
 
 re_suji = re.compile(r'[十拾百千万億兆\d]+')
@@ -100,81 +102,88 @@ class Provision:
 		return json.dumps(result, ensure_ascii=False)
 
 
-def fetchUrls(parent, log_display = True):
-	log("start fetch urls")
-	r = requests.get(parent)
-	log("fetched urls from "+parent, log_display)
-	r.encoding = r.apparent_encoding
-	log("changed encoding", log_display)
-	res = BeautifulSoup(r.text, "html.parser")
-	targets = []	
-	for i in res.find_all("a"):
-		targets.append("http://law.e-gov.go.jp" + i.get("href"))
-	return targets
+def fetch_content_from_url(parent):
+    r = requests.get(parent)
+    r.encoding = r.apparent_encoding
+    return BeautifulSoup(r.text, "html.parser")
 
-def diveUrls(url, log_display = True):
-	log("start dive urls")
-	r = requests.get(url)
-	log("fetched urls from "+url, log_display)
-	r.encoding = r.apparent_encoding
-	log("changed encoding", log_display)
-	res = BeautifulSoup(r.text, "html.parser")
-	url = res.frameset.frameset.frame.get("src")
-	return "http://law.e-gov.go.jp" + url
-	
-def scraping(url, log_display = True):
-	Law = {}
-	result = {}
-	log("start scraping")
-	r = requests.get(url)
-	log("fetched data from "+url, log_display)
-	r.encoding = r.apparent_encoding
-	log("changed encoding", log_display)
-	res = BeautifulSoup(r.text,"html.parser")
-	law_name = res.b.text.replace('\n','')
-	if "（" in law_name:
-		titles = parse("{}（{}）",law_name)
-		if titles:
-			law_name = titles[0]
-			Law["number"] = titles[1]
+def get_law_url_from_bs_data(bs_data):
+    targets = []	
+    for i in bs_data.find_all("a", class_="detail_link"):
+        print(i.string)
+        targets.append(host + i.get("href"))
+    return targets
 
-	from datetime import datetime
-	Law["date"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-	Law["url"] = url
-	Law["name"] = law_name
-	log("Law Name:"+law_name, log_display)
-	parent = ""
-	for i in res.find_all("div",class_="item"):
-		name = i.b
+def parse_article(bs_data):
+    title = bs_data.find(class_="ArticleTitle")
+    caption = bs_data.find(class_="ArticleCaption")
+    paragraph = bs_data.find(class_="ParagraphSentence")
+    if not (title and caption and paragraph):
+        return
+    print(title.string)
+    print(caption.string)
+    print(paragraph.text) 
+    print('---')
 
-		tmp = i.text.strip().split("\n\n\n\u3000")
-		if len(tmp) >= 2:
-			content = "".join(tmp[1:])
-		else:
-			content = tmp[0]
+def parse_chapter(bs_data):
+    title = bs_data.find(class_="ChapterTitle").string
+    for a in bs_data.find_all(class_="Article"):
+        parse_article(a)
 
-		if name.a and parent != "":
-			result[parent].append_sub(name.a.string, Provision(content))
-		else:
-			if name.string and name.string.isdigit():
-				name.string = "" + name.string
-				result[name.string] = Provision(content, "附則")
-			elif name.string:
-				print(name.string)
-				tmps = parse("第{}条",name.string)				
-				if tmps:
-					print(tmps)
-					result[kansuji2arabic(tmp[0])] = Provision(content, name.string, "条文")
-					parent = kansuji2arabic(tmp[0])
-				else:
-					result[name.string] = Provision(content, name.string, "条文")				
-					parent = name.string
+def scraping(url):
+    Law = {}
+    result = {}
+    log("start scraping")
+    r = requests.get(url)
+    r.encoding = r.apparent_encoding
+    res = BeautifulSoup(r.text,"html.parser")
+    law_name = res.b.text.replace('\n','')
+    if "（" in law_name:
+        titles = parse("{}（{}）",law_name)
+        if titles:
+            law_name = titles[0]
+            Law["number"] = titles[1]
 
-	log("converted json")
-	import json
-	result = dict([(k, json.loads(v.json())) for k,v in result.items()])    
-	Law["provision"] = result
-	return law_name, Law
+    from datetime import datetime
+    Law["date"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    Law["url"] = url
+    Law["name"] = law_name
+    log("Law Name:"+law_name)
+    parent = ""
+    for i in res.find_all("div",class_="MainProvision"):
+        for a in i.find_all("div", class_="Chapter"):
+            parse_chapter(a)
+        continue
+
+        name = i.b
+        tmp = i.text.strip().split("\n\n\n\u3000")
+        if len(tmp) >= 2:
+            content = "".join(tmp[1:])
+        else:
+            content = tmp[0]
+
+        if name.a and parent != "":
+            result[parent].append_sub(name.a.string, Provision(content))
+        else:
+            if name.string and name.string.isdigit():
+                name.string = "" + name.string
+                result[name.string] = Provision(content, "附則")
+            elif name.string:
+                print(name.string)
+                tmps = parse("第{}条",name.string)				
+                if tmps:
+                    print(tmps)
+                    result[kansuji2arabic(tmp[0])] = Provision(content, name.string, "条文")
+                    parent = kansuji2arabic(tmp[0])
+                else:
+                    result[name.string] = Provision(content, name.string, "条文")				
+                    parent = name.string
+
+    log("converted json")
+    import json
+    result = dict([(k, json.loads(v.json())) for k,v in result.items()])    
+    Law["provision"] = result	
+    return law_name, Law
 
 def storeJson(url, storeDir, class_dir):
 	name, contents = scraping(url, True)
@@ -200,45 +209,20 @@ def storeJson(url, storeDir, class_dir):
 	f.close()
 	return class_dir+"/"+filename
 
-def gitInit(remoteRepository, storeDir):
-	subprocess.call(["git","init"],cwd= storeDir)
-	subprocess.call(["git","remote","add","origin",remoteRepository], cwd= storeDir)
 
-def commit(filename):
-	subprocess.call(["git","add",filename], cwd=storeDir)
-	subprocess.call(["git","commit","-m","\"[Add] "+filename+"\""], cwd=storeDir)
-
-def Class_names( log_display = True):
-	log("start dive urls")
-	r = requests.get("http://law.e-gov.go.jp/cgi-bin/idxsearch.cgi")
-	r.encoding = r.apparent_encoding
-	log("changed encoding", log_display)
-	res = BeautifulSoup(r.text, "html.parser")
-	result = []
-	for i in res.find_all("input",attrs={"type": "submit", "value": "　"}):
-		result.append(i.string.replace("　","").strip())
-	return result
+def get_laws_by_hiragana(hiragana):
+    target = "{}/search/elawsSearch/elaws_search/lsg0100/search?searchType=3&initialIndex={}&category=1".format(host,hiragana)
+    data = fetch_content_from_url(target)
+    urls = get_law_url_from_bs_data(data)
+    return 
 
 if __name__ == "__main__":
-	class_names = Class_names()
-	storeDir = "LawJson"
-	for i in range(1,10):
-		for j in range(0,5):
-			if j != 0:
-				number = str(j) + str(i)
-			else:
-				number = str(i)
-			print(number)
-			target_url = "http://law.e-gov.go.jp/cgi-bin/idxsearch.cgi?H_CTG_"+number+"=%81%40&H_CTG_GUN=1&H_NAME=0&H_NAME_YOMI=%82%A0&H_NO_GENGO=H&H_NO_YEAR=0&H_NO_TYPE=2&H_NO_NO=0&H_RYAKU=1&H_YOMI_GUN=1"
-			log("==== target_url ["+target_url+"]====")
-			targets = fetchUrls(target_url)
-			cnt = 0
-			for target in targets:
-				url = diveUrls(target)
-				url = url.replace("_IDX","")
-				log("==== law url ["+url+"]====")
-				filename = storeJson(url, storeDir, "Machine")
-				#print(str(cnt) + "/" + str(len(targets)))
-				cnt = cnt + 1
-			print("complate!!!")
+    resultDir = "LawJson"
+    url = host + "/search/elawsSearch/elaws_search/lsg0500/detail?lawId=420AC0000000083"
+    print(scraping(url))
+
+    quit()
+
+    for h in [chr(i) for i in range(12353, 12436)]:
+        get_laws_by_hiragana(h)
 
