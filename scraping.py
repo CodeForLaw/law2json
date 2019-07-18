@@ -101,11 +101,45 @@ class Provision:
 				result[key] = json.loads(val.json())
 		return json.dumps(result, ensure_ascii=False)
 
+class Item:
+    def __init__( self, title, text):
+	self.title = title
+	self.text = text
+
+    def __str__(self):
+	return "- {}: {}".format(self.title,self.text)
+
+class Paragraph:
+    def __init__( self, title, text):
+	self.title = title
+	self.text = text
+	seld.items = []
+
+    def __init__( self, title, num, text):
+	self.num = num
+	self.title = title
+	self.text = text
+	seld.items = []
+
+    def add_item(self, items):
+	self.items = items
+
+    def __str__(self):
+	if self.num:
+	    res = "{}/{}: \n".format(
+		self.title,self.num)
+	else:
+	    res = "{}: \n".format(self.title)
+	res += "{}\n".format(self.text)
+	for i in items:
+	    res += " {}\n".format(str(i))
+	return res
 
 def fetch_content_from_url(parent):
     r = requests.get(parent)
     r.encoding = r.apparent_encoding
     return BeautifulSoup(r.text, "html.parser")
+
 
 def get_law_url_from_bs_data(bs_data):
     targets = []	
@@ -114,19 +148,35 @@ def get_law_url_from_bs_data(bs_data):
         targets.append(host + i.get("href"))
     return targets
 
-def parse_article(bs_data):
+def parse_paragraph(bs_data):
     title = bs_data.find(class_="ArticleTitle")
-    caption = bs_data.find(class_="ArticleCaption")
+    if not title:
+        title = bs_data.find(class_="ParagraphNum")
+
     paragraph = bs_data.find(class_="ParagraphSentence")
-    if not (title and caption and paragraph):
+    bitems = bs_data.find_all(class_="ItemSentence")
+    if not (title and paragraph):
         return
     print(title.string)
-    print(caption.string)
     print(paragraph.text) 
+    items = []
+    for i in bitems:
+	items.append(
+		i.find(class_="ItemTitle").string,
+		i.text
+	)
+
     print('---')
+
+def parse_article(bs_data):
+    caption = bs_data.find(class_="ArticleCaption")
+    for p in bs_data.find_all(class_="Paragraph"):
+        parse_paragraph(p)
+    print('======')
 
 def parse_chapter(bs_data):
     title = bs_data.find(class_="ChapterTitle").string
+    print("chapter:{}".format(title))
     for a in bs_data.find_all(class_="Article"):
         parse_article(a)
 
