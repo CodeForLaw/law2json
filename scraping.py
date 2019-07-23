@@ -1,5 +1,6 @@
 
 import sys
+import json
 
 import requests
 from parse import *
@@ -8,6 +9,8 @@ import hashlib
 import subprocess
 
 import re
+
+display = False
 
 host = "https://elaws.e-gov.go.jp"
 
@@ -59,126 +62,180 @@ def kansuji2arabic(string, sep=False):
 
 
 
-def log(msg, display = True):
-	from datetime import datetime
-	now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
-	if display:
-		print("["+now+"] "+msg)
-
-def support_provision_default(o):
-    if isinstance(o, Provision):
-        return o.json()
-    raise TypeError(repr(o) + " is not JSON serializable")
-
-class Provision:
-	def __init__( self, text, name = None,ptype = None):
-		self.text = text
-		self.name = name
-		self.ptype = ptype
-		self.sub = {}
-	def append_sub( self, name, sub_prov):
-		self.sub[name] = sub_prov
-
-	def text(self):
-		return self.text
-
-	def __str__(self):
-		res = self.text
-		if len(self.sub) != 0:
-			res += self.sub
-		return res
-
-	def json(self):
-		import json
-		result = {}
-		if self.name:
-			result["name"] = self.name
-		if self.ptype:
-			result["type"] = self.ptype
-		result["text"] = self.text
-		if len(self.sub) != 0:
-			for key, val in self.sub.items():
-				result[key] = json.loads(val.json())
-		return json.dumps(result, ensure_ascii=False)
+def log(msg):
+    from datetime import datetime
+    now = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+    if display:
+        print("["+now+"] "+msg)
 
 class Item:
     def __init__( self, title, text):
-	self.title = title
-	self.text = text
+        self.title = title.strip()
+        if len(text.strip().split("　", 1)) != 1:
+            self.text = text.strip().split("　", 1)[1]
+        else:
+            self.text = text.strip()
+
+    def json(self):
+        return {
+                "title": self.title,
+                "text": self.text,
+        }
 
     def __str__(self):
-	return "- {}: {}".format(self.title,self.text)
+        return "- {}: {}".format(self.title,self.text)
 
 class Paragraph:
-    def __init__( self, title, text):
-	self.title = title
-	self.text = text
-	seld.items = []
+    
+    def __init__( self, title = "", num = "", text = ""):
+        self.num = num.strip()
+        self.title = title.strip()
+        if len(text.strip().split("　", 1)) != 1:
+            self.text = text.strip().split("　", 1)[1]
+        else:
+            self.text = text.strip()
+        self.items = []
 
-    def __init__( self, title, num, text):
-	self.num = num
-	self.title = title
-	self.text = text
-	seld.items = []
+    def json(self):
+        res = {
+                "title": self.title,
+                "text": self.text,
+        }
+        if len(self.items) != 0:
+            res["items"] = self.items
+        if self.num:
+            res["number"] = self.num
+        return res
 
     def add_item(self, items):
-	self.items = items
+        self.items = items
 
     def __str__(self):
-	if self.num:
-	    res = "{}/{}: \n".format(
-		self.title,self.num)
-	else:
-	    res = "{}: \n".format(self.title)
-	res += "{}\n".format(self.text)
-	for i in items:
-	    res += " {}\n".format(str(i))
-	return res
+        if self.num:
+            res = "{}/{}: \n".format(
+                self.title,self.num)
+        else:
+            res = "{}: \n".format(self.title)
+        res += "{}\n".format(self.text)
+        if len(self.items) != 0:
+            for i in self.items:
+                res += " {}\n".format(str(i))
+        return res
+
+class Chapter:
+    def __init__( self, title):
+        self.title = title
+        self.articles = []
+
+    def json(self):
+        return {
+            "title": self.title,
+            "articles": self.articles,
+        }
+
+    def add_article(self, article):
+        self.articles.append(article)
+
+    def __str__(self):
+        print("# Chapter\n----")
+
+class Article:
+    def __init__( self):
+        self.caption = ""
+        self.paragraphs = []
+
+    def json(self):
+        res = {
+            "paragraphs": self.paragraphs
+        }
+        if self.caption:
+            res["caption"] = self.caption,
+        return res
+
+    def add_caption(self, caption):
+        self.caption = caption
+
+    def add_paragraph(self, paragraph):
+        self.paragraphs.append(paragraph)
+
+class ParagraphEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Chapter):
+            return obj.json()
+        elif isinstance(obj, Article): 
+            return obj.json()
+        elif isinstance(obj, Paragraph): 
+            return obj.json()
+        elif isinstance(obj, Item):
+            return obj.json()
+        else:
+            return json.JSONEncoder.default(self, obj)
 
 def fetch_content_from_url(parent):
     r = requests.get(parent)
     r.encoding = r.apparent_encoding
     return BeautifulSoup(r.text, "html.parser")
 
-
 def get_law_url_from_bs_data(bs_data):
-    targets = []	
+    targets = []    
     for i in bs_data.find_all("a", class_="detail_link"):
         print(i.string)
         targets.append(host + i.get("href"))
     return targets
 
-def parse_paragraph(bs_data):
+def parse_paragraph(bs_data, prev_title = ""):
     title = bs_data.find(class_="ArticleTitle")
+    number = None
     if not title:
-        title = bs_data.find(class_="ParagraphNum")
+        number = bs_data.find(class_="ParagraphNum")
 
     paragraph = bs_data.find(class_="ParagraphSentence")
+    if title and paragraph and prev_title:
+        return None
+
+    if paragraph:
+        paragraph = paragraph.text
+
+    res = None
+    if number:
+        res = Paragraph(title=prev_title, num=number.text, text=paragraph)
+    else:
+        res = Paragraph(title=title.text, text=paragraph)
+
     bitems = bs_data.find_all(class_="ItemSentence")
-    if not (title and paragraph):
-        return
-    print(title.string)
-    print(paragraph.text) 
     items = []
     for i in bitems:
-	items.append(
-		i.find(class_="ItemTitle").string,
-		i.text
-	)
+        items.append(Item(
+            i.find(class_="ItemTitle").string,
+            i.text
+        ))
+    if len(items) != 0:
+        res.add_item(items)
 
-    print('---')
+    return res
 
 def parse_article(bs_data):
+    article = Article()
     caption = bs_data.find(class_="ArticleCaption")
+    if caption:
+        article.add_caption(caption.text)
+
+    prev = Paragraph()
     for p in bs_data.find_all(class_="Paragraph"):
-        parse_paragraph(p)
-    print('======')
+        paragraph = parse_paragraph(p, prev_title=prev.title)
+        if not paragraph:
+            continue
+        article.add_paragraph(paragraph)
+        prev = paragraph
+
+    return article
 
 def parse_chapter(bs_data):
     title = bs_data.find(class_="ChapterTitle").string
-    print("chapter:{}".format(title))
+    chapter = Chapter(title)
     for a in bs_data.find_all(class_="Article"):
-        parse_article(a)
+        chapter.add_article(parse_article(a))
+    return chapter
 
 def scraping(url):
     Law = {}
@@ -199,65 +256,39 @@ def scraping(url):
     Law["url"] = url
     Law["name"] = law_name
     log("Law Name:"+law_name)
-    parent = ""
+
+    result = []
+
     for i in res.find_all("div",class_="MainProvision"):
         for a in i.find_all("div", class_="Chapter"):
-            parse_chapter(a)
-        continue
-
-        name = i.b
-        tmp = i.text.strip().split("\n\n\n\u3000")
-        if len(tmp) >= 2:
-            content = "".join(tmp[1:])
-        else:
-            content = tmp[0]
-
-        if name.a and parent != "":
-            result[parent].append_sub(name.a.string, Provision(content))
-        else:
-            if name.string and name.string.isdigit():
-                name.string = "" + name.string
-                result[name.string] = Provision(content, "附則")
-            elif name.string:
-                print(name.string)
-                tmps = parse("第{}条",name.string)				
-                if tmps:
-                    print(tmps)
-                    result[kansuji2arabic(tmp[0])] = Provision(content, name.string, "条文")
-                    parent = kansuji2arabic(tmp[0])
-                else:
-                    result[name.string] = Provision(content, name.string, "条文")				
-                    parent = name.string
-
-    log("converted json")
-    import json
-    result = dict([(k, json.loads(v.json())) for k,v in result.items()])    
-    Law["provision"] = result	
+            result.append(parse_chapter(a))
+                    
+    Law["provision"] = result    
     return law_name, Law
 
 def storeJson(url, storeDir, class_dir):
-	name, contents = scraping(url, True)
-	print(str(contents).replace("'",'"'))
-	return
-	print("====================")
-	print(class_dir +" / "+ name)
-	print("=======")
+    name, contents = scraping(url, True)
+    print(str(contents).replace("'",'"'))
+    return
+    print("====================")
+    print(class_dir +" / "+ name)
+    print("=======")
 
-	import os
-	if not os.path.isdir(storeDir +"/"+class_dir):
-		os.mkdir(storeDir +"/"+ class_dir)
-	name = hashlib.md5(name).hexdigest()
-	filename = name+".json"
-	log("Store "+filename)
-	if len(filename) > 250:
-		print("ERROR")
-		return class_dir+"/"+filename
-	import json
-	f = open(storeDir + "/"+class_dir+"/" + filename,"w")
-	f.write(json.dumps( contents, ensure_ascii=False, default=support_provision_default))
-	f.write("")
-	f.close()
-	return class_dir+"/"+filename
+    import os
+    if not os.path.isdir(storeDir +"/"+class_dir):
+        os.mkdir(storeDir +"/"+ class_dir)
+    name = hashlib.md5(name).hexdigest()
+    filename = name+".json"
+    log("Store "+filename)
+    if len(filename) > 250:
+        print("ERROR")
+        return class_dir+"/"+filename
+    import json
+    f = open(storeDir + "/"+class_dir+"/" + filename,"w")
+    f.write(json.dumps( contents, ensure_ascii=False))
+    f.write("")
+    f.close()
+    return class_dir+"/"+filename
 
 
 def get_laws_by_hiragana(hiragana):
@@ -269,7 +300,8 @@ def get_laws_by_hiragana(hiragana):
 if __name__ == "__main__":
     resultDir = "LawJson"
     url = host + "/search/elawsSearch/elaws_search/lsg0500/detail?lawId=420AC0000000083"
-    print(scraping(url))
+    title, contents = scraping(url)
+    print(json.dumps(contents, ensure_ascii=False, cls=ParagraphEncoder)),
 
     quit()
 
